@@ -1,13 +1,16 @@
+'''
+The main lora class. Called by applying loraModel to any model.
+'''
+
+
+
 import torch
-
 import torch.nn as nn
-
-from ldm.modules.diffusionmodules.util import checkpoint
 from ldm.modules.diffusionmodules.openaimodel import AttentionBlock
 import copy
 
 
-    
+# This might be unnecessary but we kept coherence with the base model's design 
 class LowRankConv1d(nn.Module):
     def __init__(self, in_features, out_features, rank, zeros=False):
         super().__init__()
@@ -34,18 +37,14 @@ class LowRankConv1d(nn.Module):
 
 
 class loraAttentionBlock(nn.Module):   
-    def __init__(self, base_layer, rank=4, qkv=[True, True, True], alpha=1, dropout=0):
+    def __init__(self, base_layer, rank=4, qkv=[True, True, True], alpha=1):
         super().__init__()
         self.base = base_layer
         self.rank = rank
         self.qkv = qkv
         self.scaling = alpha / rank
 
-
-        # Dimensions from the base layer
         self.channels = base_layer.channels
-
-        # Initialize LoRA layers using LowRankConv (since input is image b,c,h,w)
         
         self.lora_q = LowRankConv1d(self.channels, self.channels, self.rank, zeros=not qkv[0])
         self.lora_k = LowRankConv1d(self.channels, self.channels, self.rank, zeros=not qkv[1])
@@ -79,7 +78,7 @@ def apply_lora_to_layer(layer, rank=4, alpha=1, qkv=[True, False, True]):
     return new_layer
 
 
-#removed LinearAttention because not ready I am tired voglio morire
+#We had more types of targets at the beginning, then we decided they were unnecessary. We leave the structure in case we want to add more later
 available_targets = [AttentionBlock]
 
 
@@ -87,11 +86,7 @@ def ignorant_lora(model, target_class=available_targets, rank=4, qkv=[True, Fals
     """
     Applies Lora wherever it can in the model
     """
-    #for name, module in model.named_modules():
-    #    if isinstance(module, AttentionBlock):
-    #        print(f"mashallah")
 
-    #print([ name for name, module in model.named_modules() if any(isinstance(module, target) for target in target_class)])
     layers_to_replace = []
     for name, module in model.named_modules():
         for target in target_class: 
@@ -109,9 +104,8 @@ def ignorant_lora(model, target_class=available_targets, rank=4, qkv=[True, Fals
             child_name = full_name
             parent_module = model
 
-        #print(f"Replacing layer: {full_name}")
         new_layer = apply_lora_to_layer(old_layer, rank=rank, qkv=qkv, alpha=alpha)
-        #print("New Parameters theoretical:", sum([len(n) for n, p in new_layer.named_parameters() if 'lora' in n]))
+
         setattr(parent_module, child_name, new_layer)
     return model
 
@@ -131,19 +125,22 @@ def print_trainable_parameters(model):
 class loraModel(nn.Module):
     def __init__(self, base_model, rank = 4, alpha=1, qkv=[True, False, True], targets=available_targets):
         super().__init__()
+        ''''
+        Important methods: set_trainable_parameters freezes base model, state_dict is overridden and only saves trainable parameters
+        '''
         
         self.model = ignorant_lora(base_model, rank=rank, alpha=alpha, qkv=qkv, target_class=targets)
 
     def forward(self, x, t=None, **kwargs):
         return self.model(x, t, **kwargs)
 
+
     def __getattr__(self, name):
             try:
-                # 1. First, let PyTorch find standard attributes (like self.model, parameters, etc.)
                 return super().__getattr__(name)
             except AttributeError:
-                # 2. If PyTorch doesn't have it, ONLY THEN check the wrapped model
                 return getattr(self.model, name)
+
 
     def set_trainable_parameters(self):
         '''
